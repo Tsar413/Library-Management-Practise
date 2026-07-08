@@ -55,7 +55,7 @@ public class User {
      * admin
      * zhangsan
      */
-    @Column(length = 50, nullable = false)
+    @Column(length = 50, nullable = false, unique = true)
     private String username;
 
     /**
