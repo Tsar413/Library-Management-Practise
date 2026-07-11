@@ -11,7 +11,7 @@ package com.study.libraryManagement.dto;
  *   "password": "123456"
  * }
  */
-public class UserLoginDTO {
+public class UserDTO {
     /**
      * 用户名
      */
@@ -24,10 +24,10 @@ public class UserLoginDTO {
 
     private String password;
 
-    public UserLoginDTO() {
+    public UserDTO() {
     }
 
-    public UserLoginDTO(String username, String password) {
+    public UserDTO(String username, String password) {
         this.username = username;
         this.password = password;
     }

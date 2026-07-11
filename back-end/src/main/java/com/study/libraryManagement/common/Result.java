@@ -51,6 +51,12 @@ public class Result<T> {
         return new Result<>(401, message, null);
     }
 
+    /**
+     * 参数错误返回
+     */
+    public static <T> Result<T> badRequest(String message) {
+        return new Result<>(400, message, null);
+    }
 
     public Integer getCode() {
         return code;
