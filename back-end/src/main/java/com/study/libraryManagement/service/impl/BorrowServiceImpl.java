@@ -5,8 +5,10 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.study.libraryManagement.entity.Book;
 import com.study.libraryManagement.entity.BorrowRecord;
+import com.study.libraryManagement.entity.User;
 import com.study.libraryManagement.mapper.BookMapper;
 import com.study.libraryManagement.mapper.BorrowRecordMapper;
+import com.study.libraryManagement.mapper.UserMapper;
 import com.study.libraryManagement.service.BorrowRecordService;
 import com.study.libraryManagement.util.ParamsUtil;
 import org.springframework.stereotype.Service;
@@ -14,6 +16,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
+import java.util.Collections;
+import java.util.List;
 
 @Service
 public class BorrowServiceImpl extends ServiceImpl<BorrowRecordMapper, BorrowRecord> implements BorrowRecordService {
@@ -26,6 +30,9 @@ public class BorrowServiceImpl extends ServiceImpl<BorrowRecordMapper, BorrowRec
      */
     @Resource
     private BookMapper bookMapper;
+
+    @Resource
+    private UserMapper userMapper;
 
     /**
      * 借阅图书
@@ -110,7 +117,7 @@ public class BorrowServiceImpl extends ServiceImpl<BorrowRecordMapper, BorrowRec
          * 3. 并发情况下最后一本已被其他用户借走
          */
         if (updateRows != 1) {
-            return "图书库存不足，借阅失败";
+            throw new RuntimeException("图书库存不足，借阅失败");
         }
         // 7. 创建借阅记录
         BorrowRecord borrowRecord = new BorrowRecord();
@@ -142,5 +149,344 @@ public class BorrowServiceImpl extends ServiceImpl<BorrowRecordMapper, BorrowRec
             throw new RuntimeException("借阅记录保存失败");
         }
         return "借阅成功";
+    }
+
+    /**
+     * 根据 ISBN 归还图书
+     *
+     * 处理流程：
+     * 1. 判断用户是否已经登录
+     * 2. 判断 ISBN 是否为空
+     * 3. 根据 ISBN 查询图书
+     * 4. 查询当前用户尚未归还的借阅记录
+     * 5. 将借阅记录状态修改为已归还
+     * 6. 将图书的 borrowed_count 减 1
+     *
+     * @Transactional：
+     * 修改借阅记录和修改图书已借数量属于同一个事务。
+     *
+     * 如果其中任意一步出现异常，
+     * 两次数据库操作都会自动回滚，
+     * 避免出现“借阅记录已归还，但图书数量没有恢复”的问题。
+     *
+     * @param isbn   要归还图书的 ISBN
+     * @param userId 当前登录用户 ID，由拦截器解析 token 后传入
+     * @return 归还处理结果
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public String returnBook(String isbn, Long userId) {
+        // 1. 判断用户是否已经登录
+        if(userId == null){
+            return "用户不存在或未登录";
+        }
+        // 2. 判断 ISBN 是否为空
+        if (isbn == null || isbn.trim().isEmpty()) {
+            return "ISBN不能为空";
+        }
+        /*
+         * 3. 根据 ISBN 查询图书
+         *
+         * ISBN 在 tb_book 表中具有唯一性，
+         * 因此 selectOne 正常情况下只会查询到一条图书记录。
+         */
+        QueryWrapper<Book> wrapper1 = new QueryWrapper<Book>();
+        wrapper1.eq("isbn", isbn);
+        Book book = bookMapper.selectOne(wrapper1);
+        // 没有查询到图书时，结束归还操作
+        if(book == null){
+            return "图书不存在";
+        }
+        /*
+         * 4. 查询当前用户尚未归还的借阅记录
+         *
+         * 查询条件：
+         * user_id：必须属于当前登录用户
+         * book_id：必须是当前 ISBN 对应的图书
+         * status = 1：必须处于借阅中状态
+         *
+         * 因为系统已经限制同一个用户不能同时借阅同一本书，
+         * 所以这里可以使用 selectOne 查询。
+         */
+        QueryWrapper<BorrowRecord> wrapper2 = new QueryWrapper<BorrowRecord>();
+        wrapper2.eq("user_id", userId);
+        wrapper2.in("status", 1, 3);
+        wrapper2.eq("book_id", book.getBookId());
+        BorrowRecord borrowRecord = baseMapper.selectOne(wrapper2);
+        // 没有未归还记录，说明用户未借阅该书或已经归还
+        if(borrowRecord == null){
+            return "没有借阅记录";
+        }
+        // 统一获取当前时间
+        LocalDateTime now = LocalDateTime.now();
+        /*
+         * 5. 更新借阅记录
+         *
+         * 更新条件：
+         * record_id：指定具体借阅记录
+         * status = 1：只有借阅中的记录才能归还
+         *
+         * 更新内容：
+         * status = 2：表示已归还
+         * return_time：记录实际归还时间
+         * update_time：记录本次更新时间
+         */
+        UpdateWrapper<BorrowRecord> wrapper3 = new UpdateWrapper<BorrowRecord>();
+        wrapper3.eq("record_id", borrowRecord.getRecordId());
+        // 防止重复归还
+        wrapper3.in("status", 1, 3);
+        // 状态 2 表示已归还
+        wrapper3.set("status", 2);
+        wrapper3.set("return_time", now);
+        wrapper3.set("update_time", now);
+        /*
+         * 借阅记录更新失败时抛出异常。
+         *
+         * 抛出异常后事务会自动回滚，
+         * 不会继续保留部分更新结果。
+         */
+        int update1 = baseMapper.update(null, wrapper3);
+        if(update1 != 1){
+            throw new RuntimeException("归还失败");
+        }
+        /*
+         * 6. 图书已借数量减 1
+         *
+         * borrowed_count >= 1：
+         * 防止图书已借数量被减成负数。
+         *
+         * 不建议在还书时判断图书 status = 1，
+         * 因为即使图书已经下架，用户仍然需要能够归还。
+         */
+        UpdateWrapper<Book> wrapper4 = new UpdateWrapper<Book>();
+        wrapper4.eq("book_id", book.getBookId());
+        // 防止 borrowed_count 被减成负数
+        wrapper4.apply("borrowed_count >= 1");
+        wrapper4.setSql("borrowed_count = borrowed_count - 1");
+        wrapper4.set("update_time", now);
+        int update2 = bookMapper.update(null, wrapper4);
+        /*
+         * 图书已借数量修改失败时抛出异常。
+         *
+         * 因为当前方法开启了事务，
+         * 前面借阅记录的更新也会一起回滚。
+         */
+        if(update2 != 1){
+            throw new RuntimeException("归还失败");
+        }
+        return "归还成功";
+    }
+
+    /**
+     * 扫描并更新逾期未归还的借阅记录
+     *
+     * 处理规则：
+     * 1. 只查询当前仍处于借阅中的记录，即 status = 1
+     * 2. 如果 due_time 早于当前时间，说明已经超过应还日期
+     * 3. 将这类记录的状态修改为 3，表示逾期未归还
+     * 4. 同时更新 update_time
+     *
+     * 该方法既可以：
+     * 1. 由管理员手动调用
+     * 2. 在管理员登录成功后自动调用
+     *
+     * @Transactional：
+     * 批量更新过程中如果出现异常，
+     * 当前事务会自动回滚。
+     *
+     * @return 状态更新结果
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public String updateOverdue() {
+        // 统一获取当前时间
+        LocalDateTime now = LocalDateTime.now();
+        /*
+         * 构建批量更新条件
+         *
+         * status = 1：
+         * 只处理当前仍处于借阅中的记录。
+         *
+         * due_time < now：
+         * 应还时间早于当前时间，说明图书已经逾期。
+         */
+        UpdateWrapper<BorrowRecord> wrapper1 = new UpdateWrapper<BorrowRecord>();
+        wrapper1.eq("status", 1);
+        /*
+         * 状态 3 表示逾期未归还
+         */
+        wrapper1.set("status", 3);
+        wrapper1.lt("due_time", now);
+        // 更新记录的最后修改时间
+        wrapper1.set("update_time", now);
+        /*
+         * 执行批量更新
+         *
+         */
+        int update = baseMapper.update(null, wrapper1);
+        if(update == 0){
+            System.out.println("更新" + update + "数据");
+        }
+        /*
+         * 返回本次实际更新数量，
+         * 方便管理员了解本次扫描结果。
+         */
+        return "更新成功";
+    }
+
+    /**
+     * 查询全部借阅记录
+     *
+     * 当前主要提供给管理员使用。
+     *
+     * 查询 tb_borrow_record 表中的全部数据，
+     * 当前没有添加用户、状态或时间等筛选条件。
+     *
+     * 后续可以继续增加：
+     * 1. 按借阅状态查询
+     * 2. 按用户名查询
+     * 3. 按图书查询
+     * 4. 按借阅时间查询
+     * 5. 分页查询
+     *
+     * @return 全部借阅记录
+     */
+    @Override
+    public List<BorrowRecord> getAllLists() {
+        /*
+         * selectList(null) 表示不设置任何查询条件，
+         * 等价于查询 tb_borrow_record 表中的全部记录。
+         */
+        return baseMapper.selectList(null);
+    }
+
+    /**
+     * 根据用户名或用户 ID 查询借阅记录
+     *
+     * 当前方法暂未被 Controller 接口直接调用，
+     * 作为通用查询方法暂时保留。
+     *
+     * 处理逻辑：
+     * 1. 如果 username 不为空，则根据 username 查询用户
+     * 2. 查询到用户后，使用该用户的 userId
+     * 3. 如果 username 为空，则使用方法参数中的 userId
+     * 4. 根据最终的 userId 查询借阅记录
+     * 5. 按创建时间倒序排列
+     *
+     * @param username 用户名，可以为空
+     * @param userId   用户 ID
+     * @return 对应用户的借阅记录
+     */
+    @Override
+    public List<BorrowRecord> getOneLists(String username, Long userId) {
+        /*
+         * 如果传入了用户名，
+         * 优先根据用户名查询用户 ID。
+         */
+        if(username != null && !username.trim().isEmpty()){
+            QueryWrapper<User> wrapper1 = new QueryWrapper<User>();
+            wrapper1.eq("username", username);
+            User user = userMapper.selectOne(wrapper1);
+            // 用户不存在时返回 null
+            if(user == null){
+                return null;
+            }
+            // 使用查询到的用户 ID
+            userId = user.getUserId();
+        }
+        /*
+         * 根据最终确定的 userId 查询借阅记录。
+         */
+        QueryWrapper<BorrowRecord> wrapper2 = new QueryWrapper<BorrowRecord>();
+        wrapper2.eq("user_id", userId);
+        // 最近产生的借阅记录优先显示
+        wrapper2.orderByDesc("create_time");
+        List<BorrowRecord> borrowRecords = baseMapper.selectList(wrapper2);
+        return borrowRecords;
+    }
+
+    /**
+     * 管理员根据用户名查询指定用户的借阅记录
+     *
+     * 处理流程：
+     * 1. 判断用户名是否为空
+     * 2. 根据用户名查询用户信息
+     * 3. 获取该用户的 userId
+     * 4. 根据 userId 查询借阅记录
+     * 5. 按创建时间倒序排列
+     *
+     * 当前方法主要提供给管理员接口使用。
+     * 管理员权限校验后续应放在 Controller、
+     * 拦截器或权限管理模块中处理。
+     *
+     * @param username 要查询的用户名
+     * @return 指定用户的借阅记录
+     */
+    @Override
+    public List<BorrowRecord> getOneListsAdmin(String username) {
+        // 用户名为空时直接返回空列表
+        if(username == null || username.trim().isEmpty()){
+            return Collections.emptyList();
+
+        }
+        /*
+         * 根据用户名查询用户。
+         *
+         * username 在数据库中应具有唯一性，
+         * 因此正常情况下只会查询到一条用户数据。
+         */
+        QueryWrapper<User> wrapper1 = new QueryWrapper<User>();
+        wrapper1.eq("username", username);
+        User user = userMapper.selectOne(wrapper1);
+        // 用户不存在时返回空列表
+        if(user == null){
+            return Collections.emptyList();
+        }
+        // 获取目标用户 ID
+        Long userId = user.getUserId();
+        /*
+         * 根据用户 ID 查询借阅记录。
+         */
+        QueryWrapper<BorrowRecord> wrapper2 = new QueryWrapper<BorrowRecord>();
+        wrapper2.eq("user_id", userId);
+        // 最近产生的记录优先显示
+        wrapper2.orderByDesc("create_time");
+        List<BorrowRecord> borrowRecords = baseMapper.selectList(wrapper2);
+        return borrowRecords;
+    }
+
+    /**
+     * 查询当前登录用户自己的借阅记录
+     *
+     * userId 由登录拦截器根据 token 获取，
+     * 不由前端直接提交。
+     *
+     * 这样可以避免普通用户通过修改请求参数，
+     * 查询其他用户的借阅记录。
+     *
+     * 查询结果按照创建时间倒序排列，
+     * 最近产生的借阅记录优先显示。
+     *
+     * @param userId 当前登录用户 ID
+     * @return 当前用户自己的借阅记录
+     */
+    @Override
+    public List<BorrowRecord> getOneListsUser(Long userId) {
+        /*
+         * 用户 ID 为空时返回空列表。
+         *
+         * 正常情况下，无效 token 会先被拦截器处理，
+         * 这里作为业务层的兜底判断。
+         */
+        if (userId == null) {
+            return Collections.emptyList();
+        }
+        // 根据当前用户 ID 查询借阅记录
+        QueryWrapper<BorrowRecord> wrapper2 = new QueryWrapper<BorrowRecord>();
+        wrapper2.eq("user_id", userId);
+        // 最近产生的借阅记录优先显示
+        wrapper2.orderByDesc("create_time");
+        List<BorrowRecord> borrowRecords = baseMapper.selectList(wrapper2);
+        return borrowRecords;
     }
 }

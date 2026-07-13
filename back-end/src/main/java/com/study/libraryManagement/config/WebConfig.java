@@ -1,8 +1,10 @@
 package com.study.libraryManagement.config;
 
 import com.study.libraryManagement.interceptor.LoginInterceptor;
+import com.study.libraryManagement.util.ParamsUtil;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
+import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import javax.annotation.Resource;
@@ -32,11 +34,24 @@ public class WebConfig implements WebMvcConfigurer {
      */
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-
         registry.addInterceptor(loginInterceptor)
                 .addPathPatterns("/api/users/**")
                 .addPathPatterns("/api/books/**")
+                .addPathPatterns("/api/borrow-record/**")
+                .addPathPatterns("/api/book-review/**")
+                .addPathPatterns("/api/book-rating/**")
                 .excludePathPatterns("/api/users/login")
-                .excludePathPatterns("/api/users/registration");
+                .excludePathPatterns("/api/users/registration")
+                .excludePathPatterns("/Photos/**");;
+    }
+
+    @Override
+    public void addResourceHandlers(ResourceHandlerRegistry registry) {
+        /*
+         * Resources root
+         * addResourceHandler: Access to mapped paths
+         * addResourceLocations: Absolute paths to resources
+         */
+        registry.addResourceHandler("/Photos/**").addResourceLocations("file:" + ParamsUtil.LOCAL_PATH + "/");
     }
 }

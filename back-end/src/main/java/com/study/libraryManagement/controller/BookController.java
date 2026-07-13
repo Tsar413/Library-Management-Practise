@@ -1,6 +1,7 @@
 package com.study.libraryManagement.controller;
 
 import com.study.libraryManagement.common.Result;
+import com.study.libraryManagement.dto.BookDTO;
 import com.study.libraryManagement.entity.Book;
 import com.study.libraryManagement.service.BookService;
 import com.study.libraryManagement.service.BorrowRecordService;
@@ -118,5 +119,146 @@ public class BookController {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Result.badRequest(result));
     }
 
+    /**
+     * 根据 ISBN 归还图书
+     * 请求方式：
+     * POST
+     *
+     * 请求地址：
+     * /api/books/return/{isbn}
+     *
+     * 请求示例：
+     * POST /api/books/return/9787300000001
+     *
+     * 请求头：
+     * Authorization: Bearer token值
+     *
+     * LoginInterceptor 会读取请求头中的 token，
+     * 根据 token 查询当前用户 ID，
+     * 并将 userId 放入本次请求：
+     *
+     * request.setAttribute("userId", userId);
+     *
+     * Controller 使用 @RequestAttribute 获取当前用户 ID。
+     *
+     * @param isbn   要归还图书的 ISBN
+     * @param userId 当前登录用户 ID
+     * @return 统一封装后的归还结果
+     */
+    @PostMapping("/return/{isbn}")
+    public ResponseEntity<Result<String>> returnBook(@PathVariable String isbn, @RequestAttribute("userId") Long userId){
+        // 调用借阅业务层完成还书操作
+        String result = borrowRecordService.returnBook(isbn, userId);
+        // 归还成功，返回 HTTP 200
+        if("归还成功".equals(result)){
+            return ResponseEntity.ok(Result.success(result));
+        }
+        /*
+         * 用户未登录时返回 HTTP 401。
+         */
+        if("用户不存在或未登录".equals(result)){
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Result.unauthorized(result));
+        }
+        /*
+         * 其他业务错误返回 HTTP 400。
+         *
+         * 可能的情况包括：
+         * 1. ISBN 为空
+         * 2. 图书不存在
+         * 3. 当前用户没有该图书的未归还记录
+         */
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Result.badRequest(result));
+    }
 
+    /**
+     * 手动扫描并更新逾期未归还记录
+     *
+     * 请求方式：
+     * POST
+     *
+     * 请求地址：
+     * /api/books/update-overdue
+     *
+     * 请求头：
+     * Authorization: Bearer 管理员token
+     *
+     * 处理流程：
+     * 1. 调用 BorrowRecordService 扫描借阅记录
+     * 2. 将 status = 1 且 due_time 早于当前时间的记录
+     *    更新为 status = 3
+     * 3. 返回本次实际更新的记录数量
+     *
+     * 当前接口可以由管理员手动调用。
+     * 后续也可以在管理员登录成功后，
+     * 自动调用同一个 updateOverdue() 方法。
+     *
+     * @return 统一封装后的更新结果
+     */
+    @PostMapping("/update-overdue")
+    public ResponseEntity<Result<String>> updateOverdue(){
+        // 调用业务层扫描并更新逾期记录
+        String result = borrowRecordService.updateOverdue();
+        // 更新成功，返回 HTTP 200
+        if("更新成功".equals(result)){
+            return ResponseEntity.ok(Result.success(result));
+        }
+        // 更新出现业务异常时返回 HTTP 400
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Result.badRequest(result));
+    }
+
+    /**
+     * 根据关键词模糊查询图书
+     *
+     * 请求方式：
+     * GET
+     *
+     * 请求地址：
+     * /api/books/search?keyword=Java
+     *
+     * 查询范围：
+     * 1. ISBN
+     * 2. 图书名称
+     * 3. 作者
+     * 4. 出版社
+     * 5. 馆藏位置
+     *
+     * 请求头：
+     * Authorization: Bearer token值
+     *
+     * @param keyword 用户输入的查询关键词
+     * @return 统一封装后的图书查询结果
+     */
+    @GetMapping("/search/{keyword}")
+    public ResponseEntity<Result<List<Book>>> searchBooks(@PathVariable String keyword, @RequestAttribute("userId") Long userId){
+        List<Book> result = bookService.searchBooks(keyword);
+        // 查询成功，返回 HTTP 200
+        return ResponseEntity.ok(Result.success(result));
+    }
+
+    @PostMapping(value = "/add", consumes = "multipart/form-data")
+    public ResponseEntity<Result<String>> addNewBook(@ModelAttribute BookDTO bookDTO){
+        String result = bookService.addBook(bookDTO);
+        if ("保存成功".equals(result)) {
+            return ResponseEntity.ok(Result.success(result));
+        }
+        return ResponseEntity.badRequest().body(Result.badRequest(result));
+    }
+
+    @PutMapping(value = "/update", consumes = "multipart/form-data")
+    public ResponseEntity<Result<String>> updateBook(@ModelAttribute BookDTO bookDTO){
+        String result = bookService.updateBook(bookDTO);
+        if ("修改成功".equals(result)) {
+            return ResponseEntity.ok(Result.success(result));
+        }
+        return ResponseEntity.badRequest().body(Result.badRequest(result));
+    }
+
+    @PutMapping("/status/{isbn}")
+    public ResponseEntity<Result<String>> updateStatus(@PathVariable String isbn){
+        String result = bookService.updateStatus(isbn);
+        if ("修改成功".equals(result)) {
+            return ResponseEntity.ok(Result.success(result));
+        }
+        return ResponseEntity.badRequest().body(Result.badRequest(result));
+    }
 }
