@@ -3,13 +3,16 @@ package com.study.libraryManagement.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.study.libraryManagement.dto.BookRatingDTO;
 import com.study.libraryManagement.entity.Book;
 import com.study.libraryManagement.entity.BookRating;
 import com.study.libraryManagement.mapper.BookMapper;
 import com.study.libraryManagement.mapper.BookRatingMapper;
 import com.study.libraryManagement.service.BookRatingService;
+import com.study.libraryManagement.util.ParamsUtil;
 import com.study.libraryManagement.vo.BookRatingVO;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,6 +21,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 图书评分业务实现类
@@ -35,6 +39,12 @@ public class BookRatingServiceImpl extends ServiceImpl<BookRatingMapper, BookRat
      */
     @Resource
     private BookMapper bookMapper;
+
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    private ObjectMapper objectMapper;
 
     /**
      * 新增或修改评分
@@ -104,6 +114,12 @@ public class BookRatingServiceImpl extends ServiceImpl<BookRatingMapper, BookRat
             if (insert != 1) {
                 throw new RuntimeException("评分保存失败");
             }
+            try {
+                String cacheKey = ParamsUtil.BOOK_RATING_CACHE_PREFIX + book.getIsbn().trim();
+                stringRedisTemplate.delete(cacheKey);
+            } catch (Exception e) {
+                System.err.println("删除图书评分缓存失败：" + e.getMessage());
+            }
             return "评分成功";
         }
         /*
@@ -119,6 +135,12 @@ public class BookRatingServiceImpl extends ServiceImpl<BookRatingMapper, BookRat
         int update = baseMapper.update(null, updateWrapper);
         if (update != 1) {
             throw new RuntimeException("评分修改失败");
+        }
+        try {
+            String cacheKey = ParamsUtil.BOOK_RATING_CACHE_PREFIX + book.getIsbn().trim();
+            stringRedisTemplate.delete(cacheKey);
+        } catch (Exception e) {
+            System.err.println("删除图书评分缓存失败：" + e.getMessage());
         }
         return "评分修改成功";
     }
@@ -136,6 +158,15 @@ public class BookRatingServiceImpl extends ServiceImpl<BookRatingMapper, BookRat
     public BookRatingVO getBookRating(String isbn) {
         if (isbn == null || isbn.trim().isEmpty()) {
             return null;
+        }
+        String key = ParamsUtil.BOOK_RATING_CACHE_PREFIX + isbn.trim();
+        try {
+            String s = stringRedisTemplate.opsForValue().get(key);
+            if(s != null && !s.trim().isEmpty()){
+                return objectMapper.readValue(s, BookRatingVO.class);
+            }
+        } catch (Exception e) {
+            System.err.println("读取图书评分缓存失败，直接查询数据库：" + e.getMessage());
         }
         // 根据ISBN查询图书
         QueryWrapper<Book> bookWrapper = new QueryWrapper<>();
@@ -158,6 +189,12 @@ public class BookRatingServiceImpl extends ServiceImpl<BookRatingMapper, BookRat
          */
         if (ratings.isEmpty()) {
             ratingVO.setAverageScore(BigDecimal.ZERO);
+            try {
+                String json = objectMapper.writeValueAsString(ratingVO);
+                stringRedisTemplate.opsForValue().set(key, json, ParamsUtil.BOOK_RATING_CACHE_MINUTES, TimeUnit.MINUTES);
+            } catch (Exception e) {
+                System.err.println("写入图书评分缓存失败：" + e.getMessage());
+            }
             return ratingVO;
         }
         // 计算总分
@@ -173,6 +210,12 @@ public class BookRatingServiceImpl extends ServiceImpl<BookRatingMapper, BookRat
          */
         BigDecimal averageScore = BigDecimal.valueOf(totalScore).divide(BigDecimal.valueOf(ratings.size()), 1, RoundingMode.HALF_UP);
         ratingVO.setAverageScore(averageScore);
+        try {
+            String json = objectMapper.writeValueAsString(ratingVO);
+            stringRedisTemplate.opsForValue().set(key, json, ParamsUtil.BOOK_RATING_CACHE_MINUTES, TimeUnit.MINUTES);
+        } catch (Exception e) {
+            System.err.println("写入图书评分缓存失败：" + e.getMessage());
+        }
         return ratingVO;
     }
 

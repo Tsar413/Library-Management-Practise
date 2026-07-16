@@ -4,6 +4,10 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.fasterxml.jackson.core.JsonParseException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonMappingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.study.libraryManagement.dto.BookReviewDTO;
 import com.study.libraryManagement.entity.Book;
 import com.study.libraryManagement.entity.BookReview;
@@ -12,13 +16,17 @@ import com.study.libraryManagement.mapper.BookMapper;
 import com.study.libraryManagement.mapper.BookReviewMapper;
 import com.study.libraryManagement.mapper.UserMapper;
 import com.study.libraryManagement.service.BookReviewService;
+import com.study.libraryManagement.util.ParamsUtil;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
+import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 图书评论业务实现类
@@ -37,6 +45,12 @@ import java.util.List;
 
 @Service
 public class BookReviewServiceImpl extends ServiceImpl<BookReviewMapper, BookReview> implements BookReviewService {
+
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    private ObjectMapper objectMapper;
 
     /**
      * 图书数据访问对象
@@ -70,6 +84,22 @@ public class BookReviewServiceImpl extends ServiceImpl<BookReviewMapper, BookRev
         if (isbn == null || isbn.trim().isEmpty()) {
             return Collections.emptyList();
         }
+        String key = ParamsUtil.BOOK_REVIEW_CACHE_PREFIX + isbn.trim();
+        try {
+            String s = stringRedisTemplate.opsForValue().get(key);
+            if(!ParamsUtil.NULL_CACHE_VALUE.equals(s) && s != null){
+                 return objectMapper.readValue(s, new TypeReference<List<BookReview>>() {});
+            } else if(ParamsUtil.NULL_CACHE_VALUE.equals(s)){
+                return Collections.emptyList();
+            }
+        } catch (Exception e) {
+            /*
+             * Redis异常不能影响评论查询，
+             * 后续继续查询数据库。
+             */
+            System.err.println("读取图书评论缓存失败，直接查询数据库：" + e.getMessage());
+        }
+
         // 根据ISBN查询图书
         QueryWrapper<Book> wrapper1 = new QueryWrapper<Book>();
         wrapper1.eq("isbn", isbn.trim());
@@ -85,7 +115,17 @@ public class BookReviewServiceImpl extends ServiceImpl<BookReviewMapper, BookRev
         wrapper2.eq("status", 1);
         // 最新评论优先显示
         wrapper2.orderByDesc("create_time");
-        return baseMapper.selectList(wrapper2);
+        List<BookReview> bookReviews = baseMapper.selectList(wrapper2);
+        try {
+            String json = objectMapper.writeValueAsString(bookReviews);
+            stringRedisTemplate.opsForValue().set(key, json, ParamsUtil.BOOK_REVIEW_CACHE_MINUTES, TimeUnit.MINUTES);
+        } catch (Exception e) {
+            /*
+             * Redis写入失败不影响数据库结果返回。
+             */
+            System.err.println("写入图书评论缓存失败：" + e.getMessage());
+        }
+        return bookReviews;
     }
 
     @Override
@@ -105,6 +145,7 @@ public class BookReviewServiceImpl extends ServiceImpl<BookReviewMapper, BookRev
         if (bookReviewDTO.getContent() == null || bookReviewDTO.getContent().trim().isEmpty()) {
             return "评论内容不能为空";
         }
+        String key = ParamsUtil.BOOK_REVIEW_CACHE_PREFIX + bookReviewDTO.getIsbn().trim();
         // 根据ISBN查询图书
         QueryWrapper<Book> wrapper1 = new QueryWrapper<Book>();
         wrapper1.eq("isbn", bookReviewDTO.getIsbn().trim());
@@ -127,6 +168,14 @@ public class BookReviewServiceImpl extends ServiceImpl<BookReviewMapper, BookRev
         int insert = baseMapper.insert(bookReview);
         if(insert != 1){
             throw new RuntimeException("保存失败");
+        }
+        try {
+            stringRedisTemplate.delete(key);
+        } catch (Exception e) {
+            /*
+             * Redis写入失败不影响数据库结果返回。
+             */
+            System.err.println("图书评论缓存删除失败：" + e.getMessage());
         }
         return "评论成功";
     }
@@ -181,6 +230,15 @@ public class BookReviewServiceImpl extends ServiceImpl<BookReviewMapper, BookRev
         if (update != 1) {
             throw new RuntimeException("评论修改失败");
         }
+        String key = ParamsUtil.BOOK_REVIEW_CACHE_PREFIX + bookReviewDTO.getIsbn().trim();
+        try {
+            stringRedisTemplate.delete(key);
+        } catch (Exception e) {
+            /*
+             * Redis写入失败不影响数据库结果返回。
+             */
+            System.err.println("图书评论缓存删除失败：" + e.getMessage());
+        }
         return "修改成功";
     }
 
@@ -216,6 +274,18 @@ public class BookReviewServiceImpl extends ServiceImpl<BookReviewMapper, BookRev
         int update = baseMapper.update(null, updateWrapper);
         if (update != 1) {
             throw new RuntimeException("评论删除失败");
+        }
+        Book book = bookMapper.selectById(bookReview.getBookId());
+        if (book != null && book.getIsbn() != null) {
+            try {
+                String key = ParamsUtil.BOOK_REVIEW_CACHE_PREFIX + book.getIsbn().trim();
+                stringRedisTemplate.delete(key);
+            } catch (Exception e) {
+                /*
+                 * Redis写入失败不影响数据库结果返回。
+                 */
+                System.err.println("图书评论缓存删除失败：" + e.getMessage());
+            }
         }
         return "删除成功";
     }

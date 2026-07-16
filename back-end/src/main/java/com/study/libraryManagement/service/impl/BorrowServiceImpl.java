@@ -3,6 +3,7 @@ package com.study.libraryManagement.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.study.libraryManagement.component.BorrowRedisGuard;
 import com.study.libraryManagement.entity.Book;
 import com.study.libraryManagement.entity.BorrowRecord;
 import com.study.libraryManagement.entity.User;
@@ -11,6 +12,7 @@ import com.study.libraryManagement.mapper.BorrowRecordMapper;
 import com.study.libraryManagement.mapper.UserMapper;
 import com.study.libraryManagement.service.BorrowRecordService;
 import com.study.libraryManagement.util.ParamsUtil;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,6 +23,12 @@ import java.util.List;
 
 @Service
 public class BorrowServiceImpl extends ServiceImpl<BorrowRecordMapper, BorrowRecord> implements BorrowRecordService {
+
+    @Resource
+    private BorrowRedisGuard borrowRedisGuard;
+
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
 
     /**
      * 图书数据访问对象
@@ -66,89 +74,101 @@ public class BorrowServiceImpl extends ServiceImpl<BorrowRecordMapper, BorrowRec
         if (isbn == null || isbn.trim().isEmpty()) {
             return "ISBN不能为空";
         }
-        // 3. 根据 ISBN 查询图书
-        QueryWrapper<Book> wrapper1 = new QueryWrapper<Book>();
-        wrapper1.eq("isbn", isbn);
-        Book book = bookMapper.selectOne(wrapper1);
-        // 图书不存在，结束借阅
-        if(book == null){
-            return "图书不存在";
+        if (!borrowRedisGuard.tryBorrowOperationLock(userId, isbn.trim())) {
+            return "操作过于频繁，请勿重复借阅";
         }
-        // 4. 查询用户当前正在借阅的图书数量
-        // queryBorrowCount 应只统计 status = 1 的借阅记录
-        Integer i = baseMapper.queryBorrowCount(userId);
-        // 达到最大借阅数量，不允许继续借阅
-        if(i != null && i >= ParamsUtil.BORROW_MAX_COUNT){
-            return "超出借阅数量";
+        String lockValue = borrowRedisGuard.tryBookStockLock(isbn.trim());
+        if (lockValue == null) {
+            return "当前图书操作繁忙，请稍后再试";
         }
-        // 5. 查询用户是否已经借阅当前图书且尚未归还
-        QueryWrapper<BorrowRecord> recordWrapper = new QueryWrapper<>();
-        recordWrapper.eq("user_id", userId);
-        recordWrapper.eq("book_id", book.getBookId());
-        recordWrapper.eq("status", 1);
-        Integer sameBookCount = baseMapper.selectCount(recordWrapper);
-        if (sameBookCount != null && sameBookCount > 0) {
-            return "您已经借阅了这本图书";
-        }
-        /*
-         * 6. 原子更新图书已借数量
-         *
-         * 更新条件：
-         * 1. book_id 必须匹配
-         * 2. 图书状态必须为 1
-         * 3. borrowed_count 必须小于 stock
-         *
-         * 更新内容：
-         * borrowed_count = borrowed_count + 1
-         *
-         * 使用数据库条件更新，可以降低并发情况下超借的风险。
-         */
-        UpdateWrapper<Book> wrapper2 = new UpdateWrapper<Book>();
-        wrapper2.eq("book_id", book.getBookId());
-        wrapper2.eq("status", 1);
-        wrapper2.apply("borrowed_count < stock");
-        wrapper2.setSql("borrowed_count = borrowed_count + 1");
-        wrapper2.set("update_time", LocalDateTime.now());
-        int updateRows = bookMapper.update(null, wrapper2);
-        /*
-         * 如果没有更新到一行数据，可能是：
-         * 1. 图书已下架
-         * 2. 图书库存已经不足
-         * 3. 并发情况下最后一本已被其他用户借走
-         */
-        if (updateRows != 1) {
-            throw new RuntimeException("图书库存不足，借阅失败");
-        }
-        // 7. 创建借阅记录
-        BorrowRecord borrowRecord = new BorrowRecord();
-        // 设置图书和用户
-        borrowRecord.setBookId(book.getBookId());
-        borrowRecord.setUserId(userId);
+        try {
+            // 3. 根据 ISBN 查询图书
+            QueryWrapper<Book> wrapper1 = new QueryWrapper<Book>();
+            wrapper1.eq("isbn", isbn.trim());
+            Book book = bookMapper.selectOne(wrapper1);
+            // 图书不存在，结束借阅
+            if(book == null){
+                return "图书不存在";
+            }
+            // 4. 查询用户当前正在借阅的图书数量
+            // queryBorrowCount 应只统计 status = 1 的借阅记录
+            Integer i = baseMapper.queryBorrowCount(userId);
+            // 达到最大借阅数量，不允许继续借阅
+            if(i != null && i >= ParamsUtil.BORROW_MAX_COUNT){
+                return "超出借阅数量";
+            }
+            // 5. 查询用户是否已经借阅当前图书且尚未归还
+            QueryWrapper<BorrowRecord> recordWrapper = new QueryWrapper<>();
+            recordWrapper.eq("user_id", userId);
+            recordWrapper.eq("book_id", book.getBookId());
+            recordWrapper.eq("status", 1);
+            Integer sameBookCount = baseMapper.selectCount(recordWrapper);
+            if (sameBookCount != null && sameBookCount > 0) {
+                return "您已经借阅了这本图书";
+            }
+            /*
+             * 6. 原子更新图书已借数量
+             *
+             * 更新条件：
+             * 1. book_id 必须匹配
+             * 2. 图书状态必须为 1
+             * 3. borrowed_count 必须小于 stock
+             *
+             * 更新内容：
+             * borrowed_count = borrowed_count + 1
+             *
+             * 使用数据库条件更新，可以降低并发情况下超借的风险。
+             */
+            UpdateWrapper<Book> wrapper2 = new UpdateWrapper<Book>();
+            wrapper2.eq("book_id", book.getBookId());
+            wrapper2.eq("status", 1);
+            wrapper2.apply("borrowed_count < stock");
+            wrapper2.setSql("borrowed_count = borrowed_count + 1");
+            wrapper2.set("update_time", LocalDateTime.now());
+            int updateRows = bookMapper.update(null, wrapper2);
+            /*
+             * 如果没有更新到一行数据，可能是：
+             * 1. 图书已下架
+             * 2. 图书库存已经不足
+             * 3. 并发情况下最后一本已被其他用户借走
+             */
+            if (updateRows != 1) {
+                throw new RuntimeException("图书库存不足，借阅失败");
+            }
+            // 7. 创建借阅记录
+            BorrowRecord borrowRecord = new BorrowRecord();
+            // 设置图书和用户
+            borrowRecord.setBookId(book.getBookId());
+            borrowRecord.setUserId(userId);
 
-        // 状态 1 表示借阅中
-        borrowRecord.setStatus(1);
-        // 设置借阅时间
-        borrowRecord.setBorrowTime(LocalDateTime.now());
-        // 当前借阅期限暂定为 30 天
-        borrowRecord.setDueTime(LocalDateTime.now().plusDays(30));
-        // 尚未归还，因此归还时间为空
-        borrowRecord.setReturnTime(null);
-        // 设置记录创建和更新时间
-        borrowRecord.setCreateTime(LocalDateTime.now());
-        borrowRecord.setUpdateTime(LocalDateTime.now());
+            // 状态 1 表示借阅中
+            borrowRecord.setStatus(1);
+            // 设置借阅时间
+            borrowRecord.setBorrowTime(LocalDateTime.now());
+            // 当前借阅期限暂定为 30 天
+            borrowRecord.setDueTime(LocalDateTime.now().plusDays(30));
+            // 尚未归还，因此归还时间为空
+            borrowRecord.setReturnTime(null);
+            // 设置记录创建和更新时间
+            borrowRecord.setCreateTime(LocalDateTime.now());
+            borrowRecord.setUpdateTime(LocalDateTime.now());
 
-        /*
-         * 插入失败时抛出异常。
-         *
-         * 不能只返回“借阅失败”，否则事务会认为方法正常结束，
-         * 前面已经增加的 borrowed_count 不会回滚。
-         */
-        int insertRows = baseMapper.insert(borrowRecord);
+            /*
+             * 插入失败时抛出异常。
+             *
+             * 不能只返回“借阅失败”，否则事务会认为方法正常结束，
+             * 前面已经增加的 borrowed_count 不会回滚。
+             */
+            int insertRows = baseMapper.insert(borrowRecord);
 
-        if (insertRows != 1) {
-            throw new RuntimeException("借阅记录保存失败");
+            if (insertRows != 1) {
+                throw new RuntimeException("借阅记录保存失败");
+            }
+            stringRedisTemplate.delete(ParamsUtil.BOOK_CACHE_PREFIX + isbn.trim());
+            return "借阅成功";
+        } finally {
+            borrowRedisGuard.releaseBookStockLock(isbn.trim(), lockValue);
         }
-        return "借阅成功";
     }
 
     /**
@@ -176,105 +196,130 @@ public class BorrowServiceImpl extends ServiceImpl<BorrowRecordMapper, BorrowRec
     @Override
     @Transactional(rollbackFor = Exception.class)
     public String returnBook(String isbn, Long userId) {
-        // 1. 判断用户是否已经登录
-        if(userId == null){
+        /*
+         * 1. 判断用户是否登录。
+         */
+        if (userId == null) {
             return "用户不存在或未登录";
         }
-        // 2. 判断 ISBN 是否为空
+        /*
+         * 2. 判断 ISBN 是否为空。
+         */
         if (isbn == null || isbn.trim().isEmpty()) {
             return "ISBN不能为空";
         }
         /*
-         * 3. 根据 ISBN 查询图书
-         *
-         * ISBN 在 tb_book 表中具有唯一性，
-         * 因此 selectOne 正常情况下只会查询到一条图书记录。
+         * 后续统一使用去除首尾空格后的 ISBN。
          */
-        QueryWrapper<Book> wrapper1 = new QueryWrapper<Book>();
-        wrapper1.eq("isbn", isbn);
-        Book book = bookMapper.selectOne(wrapper1);
-        // 没有查询到图书时，结束归还操作
-        if(book == null){
-            return "图书不存在";
+        String cleanIsbn = isbn.trim();
+        /*
+         * 3. 防止同一个用户在短时间内，
+         * 对同一本书重复提交归还请求。
+         */
+        if (!borrowRedisGuard.tryReturnOperationLock(userId, cleanIsbn)) {
+            return "操作过于频繁，请勿重复归还";
         }
         /*
-         * 4. 查询当前用户尚未归还的借阅记录
+         * 4. 获取图书库存锁。
          *
-         * 查询条件：
-         * user_id：必须属于当前登录用户
-         * book_id：必须是当前 ISBN 对应的图书
-         * status = 1：必须处于借阅中状态
-         *
-         * 因为系统已经限制同一个用户不能同时借阅同一本书，
-         * 所以这里可以使用 selectOne 查询。
+         * 借阅和归还都会修改 borrowed_count，
+         * 因此必须共用同一个图书库存锁。
          */
-        QueryWrapper<BorrowRecord> wrapper2 = new QueryWrapper<BorrowRecord>();
-        wrapper2.eq("user_id", userId);
-        wrapper2.in("status", 1, 3);
-        wrapper2.eq("book_id", book.getBookId());
-        BorrowRecord borrowRecord = baseMapper.selectOne(wrapper2);
-        // 没有未归还记录，说明用户未借阅该书或已经归还
-        if(borrowRecord == null){
-            return "没有借阅记录";
+        String lockValue = borrowRedisGuard.tryBookStockLock(cleanIsbn);
+        if (lockValue == null) {
+            return "当前图书操作繁忙，请稍后再试";
         }
-        // 统一获取当前时间
-        LocalDateTime now = LocalDateTime.now();
-        /*
-         * 5. 更新借阅记录
-         *
-         * 更新条件：
-         * record_id：指定具体借阅记录
-         * status = 1：只有借阅中的记录才能归还
-         *
-         * 更新内容：
-         * status = 2：表示已归还
-         * return_time：记录实际归还时间
-         * update_time：记录本次更新时间
-         */
-        UpdateWrapper<BorrowRecord> wrapper3 = new UpdateWrapper<BorrowRecord>();
-        wrapper3.eq("record_id", borrowRecord.getRecordId());
-        // 防止重复归还
-        wrapper3.in("status", 1, 3);
-        // 状态 2 表示已归还
-        wrapper3.set("status", 2);
-        wrapper3.set("return_time", now);
-        wrapper3.set("update_time", now);
-        /*
-         * 借阅记录更新失败时抛出异常。
-         *
-         * 抛出异常后事务会自动回滚，
-         * 不会继续保留部分更新结果。
-         */
-        int update1 = baseMapper.update(null, wrapper3);
-        if(update1 != 1){
-            throw new RuntimeException("归还失败");
+        try {
+            /*
+             * 5. 根据 ISBN 查询图书。
+             *
+             * 不限制 status，
+             * 因为即使图书已经下架，
+             * 用户仍然应该能够归还。
+             */
+            QueryWrapper<Book> bookWrapper = new QueryWrapper<Book>();
+            bookWrapper.eq("isbn", cleanIsbn);
+            Book book = bookMapper.selectOne(bookWrapper);
+            if (book == null) {
+                return "图书不存在";
+            }
+            /*
+             * 6. 查询当前用户尚未归还的借阅记录。
+             *
+             * status = 1：借阅中
+             * status = 3：已逾期但尚未归还
+             */
+            QueryWrapper<BorrowRecord> recordWrapper = new QueryWrapper<BorrowRecord>();
+            recordWrapper.eq("user_id", userId);
+            recordWrapper.eq("book_id", book.getBookId());
+            recordWrapper.in("status", 1, 3);
+            BorrowRecord borrowRecord = baseMapper.selectOne(recordWrapper);
+            if (borrowRecord == null) {
+                return "没有未归还的借阅记录";
+            }
+            LocalDateTime now = LocalDateTime.now();
+            /*
+             * 7. 更新借阅记录。
+             *
+             * 更新时再次限制 status 为 1 或 3，
+             * 防止并发情况下重复归还。
+             */
+            UpdateWrapper<BorrowRecord> recordUpdateWrapper = new UpdateWrapper<BorrowRecord>();
+            recordUpdateWrapper.eq("record_id", borrowRecord.getRecordId());
+            recordUpdateWrapper.eq("user_id", userId);
+            recordUpdateWrapper.in("status", 1, 3);
+            recordUpdateWrapper.set("status", 2);
+            recordUpdateWrapper.set("return_time", now);
+            recordUpdateWrapper.set("update_time", now);
+            int recordUpdateRows = baseMapper.update(null, recordUpdateWrapper);
+            if (recordUpdateRows != 1) {
+                throw new RuntimeException("该图书可能已经归还，请勿重复操作");
+            }
+            /*
+             * 8. 图书已借数量减 1。
+             *
+             * borrowed_count > 0，
+             * 防止数量被减成负数。
+             *
+             * 不限制图书 status，
+             * 下架图书依然允许归还。
+             */
+            UpdateWrapper<Book> bookUpdateWrapper = new UpdateWrapper<Book>();
+            bookUpdateWrapper.eq("book_id", book.getBookId());
+            bookUpdateWrapper.apply("borrowed_count > 0");
+            bookUpdateWrapper.setSql("borrowed_count = borrowed_count - 1");
+            bookUpdateWrapper.set("update_time", now);
+            int bookUpdateRows = bookMapper.update(null, bookUpdateWrapper);
+            /*
+             * 修改失败时抛出异常，
+             * 前面借阅记录的修改会随事务一起回滚。
+             */
+            if (bookUpdateRows != 1) {
+                throw new RuntimeException("图书借阅数量异常，归还失败");
+            }
+            /*
+             * 9. 删除图书详情缓存。
+             *
+             * 图书的 borrowed_count 已经变化，
+             * Redis 中原来的缓存已经不再准确。
+             *
+             * Redis 异常不能影响数据库还书业务，
+             * 因此这里必须捕获异常。
+             */
+            try {
+                String cacheKey = ParamsUtil.BOOK_CACHE_PREFIX + cleanIsbn;
+                stringRedisTemplate.delete(cacheKey);
+            } catch (Exception e) {
+                System.err.println("删除图书详情缓存失败：" + e.getMessage());
+            }
+            return "归还成功";
+        } finally {
+            /*
+             * 10. 无论方法正常结束、提前 return，
+             * 还是抛出异常，都释放图书库存锁。
+             */
+            borrowRedisGuard.releaseBookStockLock(cleanIsbn, lockValue);
         }
-        /*
-         * 6. 图书已借数量减 1
-         *
-         * borrowed_count >= 1：
-         * 防止图书已借数量被减成负数。
-         *
-         * 不建议在还书时判断图书 status = 1，
-         * 因为即使图书已经下架，用户仍然需要能够归还。
-         */
-        UpdateWrapper<Book> wrapper4 = new UpdateWrapper<Book>();
-        wrapper4.eq("book_id", book.getBookId());
-        // 防止 borrowed_count 被减成负数
-        wrapper4.apply("borrowed_count >= 1");
-        wrapper4.setSql("borrowed_count = borrowed_count - 1");
-        wrapper4.set("update_time", now);
-        int update2 = bookMapper.update(null, wrapper4);
-        /*
-         * 图书已借数量修改失败时抛出异常。
-         *
-         * 因为当前方法开启了事务，
-         * 前面借阅记录的更新也会一起回滚。
-         */
-        if(update2 != 1){
-            throw new RuntimeException("归还失败");
-        }
-        return "归还成功";
     }
 
     /**

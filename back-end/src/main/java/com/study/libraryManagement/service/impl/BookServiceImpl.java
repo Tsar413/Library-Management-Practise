@@ -3,17 +3,22 @@ package com.study.libraryManagement.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.study.libraryManagement.dto.BookDTO;
 import com.study.libraryManagement.entity.Book;
 import com.study.libraryManagement.mapper.BookMapper;
 import com.study.libraryManagement.service.BookService;
 import com.study.libraryManagement.util.ParamsUtil;
 import com.study.libraryManagement.util.SavePhotosUtil;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.annotation.Resource;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 图书业务实现类
@@ -27,6 +32,12 @@ import java.util.List;
  */
 @Service
 public class BookServiceImpl extends ServiceImpl<BookMapper, Book> implements BookService {
+
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    private ObjectMapper objectMapper;
 
     /**
      * 查询所有图书
@@ -63,7 +74,7 @@ public class BookServiceImpl extends ServiceImpl<BookMapper, Book> implements Bo
             return getAllBooks();
         }
         // 去除关键词前后的空格
-        keyword = keyword.trim();
+        String cleanKeyword = keyword.trim();
         /*
          * 构建查询条件
          *
@@ -77,16 +88,18 @@ public class BookServiceImpl extends ServiceImpl<BookMapper, Book> implements Bo
          * OR location LIKE '%关键词%'
          */
         QueryWrapper<Book> wrapper1 = new QueryWrapper<Book>();
-        wrapper1.eq("status", 1);
-        wrapper1.like("isbn", keyword)
-                .or()
-                .like("book_name", keyword)
-                .or()
-                .like("author", keyword)
-                .or()
-                .like("publisher", keyword)
-                .or()
-                .like("location", keyword);
+        wrapper1.eq("status", 1)
+                .and(w -> w
+                        .like("isbn", cleanKeyword)
+                        .or()
+                        .like("book_name", cleanKeyword)
+                        .or()
+                        .like("author", cleanKeyword)
+                        .or()
+                        .like("publisher", cleanKeyword)
+                        .or()
+                        .like("location", cleanKeyword)
+                );
         return baseMapper.selectList(wrapper1);
     }
 
@@ -136,6 +149,11 @@ public class BookServiceImpl extends ServiceImpl<BookMapper, Book> implements Bo
         int count = baseMapper.insert(book);
         if(count != 1){
             throw new RuntimeException("保存失败");
+        }
+        try {
+            stringRedisTemplate.delete(ParamsUtil.BOOK_CACHE_PREFIX + book.getIsbn());
+        } catch (Exception e) {
+            System.err.println("删除图书缓存失败：" + e.getMessage());
         }
         return "保存成功";
     }
@@ -195,6 +213,11 @@ public class BookServiceImpl extends ServiceImpl<BookMapper, Book> implements Bo
         if(update != 1){
             throw new RuntimeException("修改失败");
         }
+        try {
+            stringRedisTemplate.delete(ParamsUtil.BOOK_CACHE_PREFIX + book1.getIsbn());
+        } catch (Exception e) {
+            System.err.println("删除图书缓存失败：" + e.getMessage());
+        }
         return "修改成功";
     }
 
@@ -243,6 +266,164 @@ public class BookServiceImpl extends ServiceImpl<BookMapper, Book> implements Bo
         if(update != 1){
             throw new RuntimeException("修改失败");
         }
+        try {
+            stringRedisTemplate.delete(ParamsUtil.BOOK_CACHE_PREFIX + book1.getIsbn());
+        } catch (Exception e) {
+            System.err.println("删除图书缓存失败：" + e.getMessage());
+        }
         return "修改成功";
+    }
+
+    @Override
+    public Book getBookByISBN(String isbn) {
+        if(isbn == null || isbn.trim().isEmpty() || isbn.trim().length() != ParamsUtil.ISBN_LENGTH){
+            return null;
+        }
+        if (!isbn.trim().matches("\\d+")) {
+            return null;
+        }
+        String key = ParamsUtil.BOOK_CACHE_PREFIX + isbn.trim();
+        /*
+         * 先查询Redis。
+         */
+        try {
+            String cacheValue = stringRedisTemplate.opsForValue().get(key);
+            /*
+             * 命中空值缓存。
+             *
+             * 说明该ISBN之前已经查询过，
+             * 数据库中不存在对应图书。
+             */
+            if (ParamsUtil.NULL_CACHE_VALUE.equals(cacheValue)) {
+                return null;
+            }
+            /*
+             * 命中正常图书缓存。
+             */
+            if (cacheValue != null && !cacheValue.trim().isEmpty()) {
+                return objectMapper.readValue(cacheValue, Book.class);
+            }
+
+        } catch (Exception e) {
+            /*
+             * Redis连接失败时降级访问数据库。
+             */
+            System.err.println("Redis读取失败，直接查询数据库：" + e.getMessage());
+        }
+        /*
+         * 缓存不存在，尝试获取缓存重建锁
+         */
+        String lockKey = ParamsUtil.BOOK_CACHE_LOCK_PREFIX + isbn.trim();
+        String lockValue = UUID.randomUUID().toString();
+        Boolean flag;
+        try {
+            flag = stringRedisTemplate.opsForValue().setIfAbsent(lockKey, lockValue, ParamsUtil.BOOK_CACHE_LOCK_SECONDS, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            /*
+             * Redis加锁失败时，
+             * 继续降级查询数据库。
+             */
+            System.err.println("Redis加锁失败，直接查询数据库：" + e.getMessage());
+            return queryBookFromDatabase(key, isbn.trim());
+        }
+        if(!Boolean.TRUE.equals(flag)){
+            for (int i = 0; i < ParamsUtil.BOOK_CACHE_RETRY_COUNT; i++) {
+                try {
+                    Thread.sleep(ParamsUtil.BOOK_CACHE_RETRY_MILLIS);
+                    String cacheValue = stringRedisTemplate.opsForValue().get(key);
+                    /*
+                     * 命中空值缓存。
+                     *
+                     * 说明该ISBN之前已经查询过，
+                     * 数据库中不存在对应图书。
+                     */
+                    if (ParamsUtil.NULL_CACHE_VALUE.equals(cacheValue)) {
+                        return null;
+                    }
+                    /*
+                     * 命中正常图书缓存。
+                     */
+                    if (cacheValue != null && !cacheValue.trim().isEmpty()) {
+                        return objectMapper.readValue(cacheValue, Book.class);
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return queryBookFromDatabase(key, isbn.trim());
+                } catch (Exception e) {
+                    System.err.println("等待缓存重建时Redis异常：" + e.getMessage());
+                    return queryBookFromDatabase(key, isbn.trim());
+                }
+            }
+            return queryBookFromDatabase(key, isbn.trim());
+        }
+        /*
+         * 当前请求已经获得锁。
+         *
+         * 获得锁后再次查询缓存，
+         * 防止等待抢锁期间其他请求已经完成缓存重建。
+         */
+        try {
+            String cacheValue = stringRedisTemplate.opsForValue().get(key);
+            if (ParamsUtil.NULL_CACHE_VALUE.equals(cacheValue)) {
+                return null;
+            }
+            if (cacheValue != null && !cacheValue.trim().isEmpty()) {
+                return objectMapper.readValue(cacheValue, Book.class);
+            }
+        } catch (Exception e) {
+            System.err.println("二次读取图书缓存失败：" + e.getMessage());
+        }
+        Book book = queryBookFromDatabase(key, isbn.trim());
+        try {
+            String currentLockValue = stringRedisTemplate.opsForValue().get(lockKey);
+            if (lockValue.equals(currentLockValue)) {
+                stringRedisTemplate.delete(lockKey);
+            }
+        } catch (Exception e) {
+            /*
+             * 锁本身设置了自动过期时间，
+             * 释放失败后最终也会自动消失。
+             */
+            System.err.println("释放图书缓存锁失败：" + e.getMessage());
+        }
+        return book;
+    }
+
+    private Book queryBookFromDatabase(String key, String isbn){
+        /*
+         * Redis未命中，查询数据库。
+         */
+        QueryWrapper<Book> wrapper = new QueryWrapper<Book>();
+        wrapper.eq("isbn", isbn.trim());
+        wrapper.eq("status", 1);
+        Book book = baseMapper.selectOne(wrapper);
+        /*
+         * 数据库中不存在：
+         * 写入短期空值缓存。
+         */
+        if (book == null) {
+            try {
+                stringRedisTemplate.opsForValue().set(key, ParamsUtil.NULL_CACHE_VALUE, ParamsUtil.NULL_CACHE_MINUTES, TimeUnit.MINUTES);
+            } catch (Exception e) {
+                /*
+                 * Redis异常不影响正常返回。
+                 */
+                System.err.println("Redis空值缓存写入失败：" + e.getMessage());
+            }
+            return null;
+        }
+        /*
+         * 数据库中存在：
+         * 转换成JSON并写入Redis。
+         */
+        try {
+            stringRedisTemplate.opsForValue().set(key, objectMapper.writeValueAsString(book), ParamsUtil.BOOK_CACHE_MINUTES, TimeUnit.MINUTES);
+        } catch (Exception e) {
+            /*
+             * Redis异常不影响正常返回。
+             */
+            System.err.println("Redis图书缓存写入失败：" + e.getMessage());
+        }
+        return book;
     }
 }

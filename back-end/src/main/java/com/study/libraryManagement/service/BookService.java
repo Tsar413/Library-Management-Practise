@@ -16,4 +16,6 @@ public interface BookService extends IService<Book> {
     String updateBook(BookDTO bookDTO);
 
     String updateStatus(String isbn);
+
+    Book getBookByISBN(String isbn);
 }

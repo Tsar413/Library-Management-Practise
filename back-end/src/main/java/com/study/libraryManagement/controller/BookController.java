@@ -67,6 +67,14 @@ public class BookController {
         // 返回 HTTP 200，并使用 Result 统一封装查询结果
         return ResponseEntity.ok(Result.success(books));
     }
+    @GetMapping("/query/{isbn}")
+    public ResponseEntity<Result<Book>> getBookByISBN(@PathVariable String isbn) {
+        Book book = bookService.getBookByISBN(isbn);
+        if (book == null) {
+            return ResponseEntity.badRequest().body(Result.badRequest("图书不存在或已下架"));
+        }
+        return ResponseEntity.ok(Result.success(book));
+    }
 
     /**
      * 借阅图书
