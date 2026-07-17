@@ -41,6 +41,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     public User login(UserDTO loginDTO) {
         QueryWrapper<User> wrapper = new QueryWrapper<User>();
         wrapper.eq("username", loginDTO.getUsername());
+        wrapper.eq("status", 1);
         User user = baseMapper.selectOne(wrapper);
         if(user == null){
             return null;

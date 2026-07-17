@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import javax.persistence.Id;
 
 import javax.persistence.*;
@@ -72,6 +74,7 @@ public class User {
      * 保存数据库
      */
     @Column(length = 100, nullable = false)
+    @JsonIgnore
     private String password;
 
     /**
