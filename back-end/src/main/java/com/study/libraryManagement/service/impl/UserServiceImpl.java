@@ -100,6 +100,6 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
          * 不建议只判断不是USER，
          * 否则异常角色也可能获得管理员权限。
          */
-        return "ADMIN".equals(user.getRole());
+        return "ADMIN".equals(user.getRole()) && Integer.valueOf(1).equals(user.getStatus());
     }
 }
