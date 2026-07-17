@@ -40,6 +40,7 @@ public class WebConfig implements WebMvcConfigurer {
                 .addPathPatterns("/api/borrow-record/**")
                 .addPathPatterns("/api/book-review/**")
                 .addPathPatterns("/api/book-rating/**")
+                .addPathPatterns("/api/redis-test/**")
                 .excludePathPatterns("/api/users/login")
                 .excludePathPatterns("/api/users/registration")
                 .excludePathPatterns("/Photos/**");;

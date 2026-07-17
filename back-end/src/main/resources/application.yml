@@ -8,8 +8,8 @@ spring:
   datasource:
     driver-class-name: com.mysql.jdbc.Driver
     url: jdbc:mysql://127.0.0.1:3306/study_library_management?allowPublicKeyRetrieval=true&useSSL=false&characterEncoding=UTF-8&serverTimezone=GMT%2B8
-    username: root
-    password: 123456
+    username: 
+    password: 
   jpa:
     hibernate:
       ddl-auto: update
@@ -17,7 +17,7 @@ spring:
   redis:
     host: 127.0.0.1
     port: 16379
-    password: 000c4459
+    password: 
     database: 0
     timeout: 2000ms
 
