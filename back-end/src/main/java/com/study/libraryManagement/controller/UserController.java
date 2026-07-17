@@ -30,7 +30,10 @@ public class UserController {
      * /api/users/list
      */
     @GetMapping("/list")
-    public ResponseEntity<Result<List<User>>> getAllUsers(){
+    public ResponseEntity<Result<List<User>>> getAllUsers(@RequestAttribute("userId") Long userId){
+        if (!userService.isAdmin(userId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Result.badRequest("权限不足，仅管理员可以查询用户列表"));
+        }
         List<User> users = userService.getAllUsers();
         return ResponseEntity.ok(Result.success(users));
     }

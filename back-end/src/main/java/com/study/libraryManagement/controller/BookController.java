@@ -5,6 +5,7 @@ import com.study.libraryManagement.dto.BookDTO;
 import com.study.libraryManagement.entity.Book;
 import com.study.libraryManagement.service.BookService;
 import com.study.libraryManagement.service.BorrowRecordService;
+import com.study.libraryManagement.service.UserService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -35,6 +36,8 @@ public class BookController {
     @Resource
     private BorrowRecordService borrowRecordService;
 
+    @Resource
+    private UserService userService;
     /**
      * 查询全部图书
      *
@@ -203,7 +206,10 @@ public class BookController {
      * @return 统一封装后的更新结果
      */
     @PostMapping("/update-overdue")
-    public ResponseEntity<Result<String>> updateOverdue(){
+    public ResponseEntity<Result<String>> updateOverdue(@RequestAttribute("userId") Long userId){
+        if (!userService.isAdmin(userId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Result.badRequest("权限不足，仅管理员可以更新逾期记录"));
+        }
         // 调用业务层扫描并更新逾期记录
         String result = borrowRecordService.updateOverdue();
         // 更新成功，返回 HTTP 200
@@ -244,7 +250,10 @@ public class BookController {
     }
 
     @PostMapping(value = "/add", consumes = "multipart/form-data")
-    public ResponseEntity<Result<String>> addNewBook(@ModelAttribute BookDTO bookDTO){
+    public ResponseEntity<Result<String>> addNewBook(@ModelAttribute BookDTO bookDTO, @RequestAttribute("userId") Long userId){
+        if (!userService.isAdmin(userId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Result.badRequest("权限不足，仅管理员可以新增图书"));
+        }
         String result = bookService.addBook(bookDTO);
         if ("保存成功".equals(result)) {
             return ResponseEntity.ok(Result.success(result));
@@ -253,7 +262,10 @@ public class BookController {
     }
 
     @PutMapping(value = "/update", consumes = "multipart/form-data")
-    public ResponseEntity<Result<String>> updateBook(@ModelAttribute BookDTO bookDTO){
+    public ResponseEntity<Result<String>> updateBook(@ModelAttribute BookDTO bookDTO, @RequestAttribute("userId") Long userId){
+        if (!userService.isAdmin(userId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Result.badRequest("权限不足，仅管理员可以修改图书"));
+        }
         String result = bookService.updateBook(bookDTO);
         if ("修改成功".equals(result)) {
             return ResponseEntity.ok(Result.success(result));
@@ -262,7 +274,10 @@ public class BookController {
     }
 
     @PutMapping("/status/{isbn}")
-    public ResponseEntity<Result<String>> updateStatus(@PathVariable String isbn){
+    public ResponseEntity<Result<String>> updateStatus(@PathVariable String isbn, @RequestAttribute("userId") Long userId){
+        if (!userService.isAdmin(userId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Result.badRequest("权限不足，仅管理员可以修改图书状态"));
+        }
         String result = bookService.updateStatus(isbn);
         if ("修改成功".equals(result)) {
             return ResponseEntity.ok(Result.success(result));

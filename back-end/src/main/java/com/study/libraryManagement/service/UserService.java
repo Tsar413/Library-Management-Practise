@@ -12,4 +12,6 @@ public interface UserService extends IService<User> {
     User login(UserDTO loginDTO);
 
     String registration(UserDTO registrationDTO);
+
+    boolean isAdmin(Long userId);
 }

@@ -3,6 +3,8 @@ package com.study.libraryManagement.controller;
 import com.study.libraryManagement.common.Result;
 import com.study.libraryManagement.entity.BorrowRecord;
 import com.study.libraryManagement.service.BorrowRecordService;
+import com.study.libraryManagement.service.UserService;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -15,6 +17,9 @@ public class BorrowRecordController {
 
     @Resource
     private BorrowRecordService borrowRecordService;
+
+    @Resource
+    private UserService userService;
 
     /**
      * 查询全部借阅记录
@@ -30,7 +35,13 @@ public class BorrowRecordController {
      * @return 统一封装后的全部借阅记录
      */
     @GetMapping("/lists-all")
-    public ResponseEntity<Result<List<BorrowRecord>>> getAllLists(){
+    public ResponseEntity<Result<List<BorrowRecord>>> getAllLists(@RequestAttribute("userId") Long userId){
+        /*
+         * 只有管理员可以查询全部用户的借阅记录。
+         */
+        if (!userService.isAdmin(userId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Result.badRequest("权限不足，仅管理员可以查询全部借阅记录"));
+        }
         // 调用业务层查询全部借阅记录
         List<BorrowRecord> result = borrowRecordService.getAllLists();
         // 返回 HTTP 200 和查询结果
@@ -61,7 +72,14 @@ public class BorrowRecordController {
      * @return 指定用户的借阅记录
      */
     @GetMapping("/lists-one-admin/{username}")
-    public ResponseEntity<Result<List<BorrowRecord>>> getOneListsAdmin(@PathVariable("username") String username){
+    public ResponseEntity<Result<List<BorrowRecord>>> getOneListsAdmin(@PathVariable("username") String username, @RequestAttribute("userId") Long userId){
+        /*
+         * 普通用户不能通过用户名查询他人借阅记录。
+         */
+        if (!userService.isAdmin(userId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Result.badRequest("权限不足，仅管理员可以查询他人借阅记录"));
+        }
+
         // 调用业务层查询指定用户的借阅记录
         List<BorrowRecord> result = borrowRecordService.getOneListsAdmin(username);
         // 返回 HTTP 200 和查询结果

@@ -84,4 +84,22 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         }
         return "注册成功";
     }
+
+    @Override
+    public boolean isAdmin(Long userId) {
+        if (userId == null) {
+            return false;
+        }
+        User user = baseMapper.selectById(userId);
+        if (user == null) {
+            return false;
+        }
+        /*
+         * 必须明确等于ADMIN才放行。
+         *
+         * 不建议只判断不是USER，
+         * 否则异常角色也可能获得管理员权限。
+         */
+        return "ADMIN".equals(user.getRole());
+    }
 }

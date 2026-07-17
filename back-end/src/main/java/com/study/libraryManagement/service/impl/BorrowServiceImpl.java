@@ -30,6 +30,9 @@ public class BorrowServiceImpl extends ServiceImpl<BorrowRecordMapper, BorrowRec
     @Resource
     private StringRedisTemplate stringRedisTemplate;
 
+    @Resource
+    private UserMapper userMapper;
+
     /**
      * 图书数据访问对象
      *
@@ -38,9 +41,6 @@ public class BorrowServiceImpl extends ServiceImpl<BorrowRecordMapper, BorrowRec
      */
     @Resource
     private BookMapper bookMapper;
-
-    @Resource
-    private UserMapper userMapper;
 
     /**
      * 借阅图书
@@ -488,12 +488,12 @@ public class BorrowServiceImpl extends ServiceImpl<BorrowRecordMapper, BorrowRec
             return Collections.emptyList();
         }
         // 获取目标用户 ID
-        Long userId = user.getUserId();
+        Long userId2 = user.getUserId();
         /*
          * 根据用户 ID 查询借阅记录。
          */
         QueryWrapper<BorrowRecord> wrapper2 = new QueryWrapper<BorrowRecord>();
-        wrapper2.eq("user_id", userId);
+        wrapper2.eq("user_id", userId2);
         // 最近产生的记录优先显示
         wrapper2.orderByDesc("create_time");
         List<BorrowRecord> borrowRecords = baseMapper.selectList(wrapper2);
