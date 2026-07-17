@@ -7,6 +7,6 @@ import org.apache.ibatis.annotations.Select;
 
 @Mapper
 public interface BorrowRecordMapper extends BaseMapper<BorrowRecord> {
-    @Select("select count(*) from tb_borrow_record where user_id = #{userId} and status = 1")
+    @Select("select count(*) from tb_borrow_record where user_id = #{userId} and status in (1, 3)")
     public Integer queryBorrowCount(Long userId);
 }

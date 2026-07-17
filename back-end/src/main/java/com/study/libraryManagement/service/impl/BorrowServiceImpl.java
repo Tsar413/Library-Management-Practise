@@ -101,7 +101,7 @@ public class BorrowServiceImpl extends ServiceImpl<BorrowRecordMapper, BorrowRec
             QueryWrapper<BorrowRecord> recordWrapper = new QueryWrapper<>();
             recordWrapper.eq("user_id", userId);
             recordWrapper.eq("book_id", book.getBookId());
-            recordWrapper.eq("status", 1);
+            recordWrapper.in("status", 1, 3);
             Integer sameBookCount = baseMapper.selectCount(recordWrapper);
             if (sameBookCount != null && sameBookCount > 0) {
                 return "您已经借阅了这本图书";
