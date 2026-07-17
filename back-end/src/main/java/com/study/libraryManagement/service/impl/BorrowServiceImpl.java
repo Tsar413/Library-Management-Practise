@@ -164,7 +164,12 @@ public class BorrowServiceImpl extends ServiceImpl<BorrowRecordMapper, BorrowRec
             if (insertRows != 1) {
                 throw new RuntimeException("借阅记录保存失败");
             }
-            stringRedisTemplate.delete(ParamsUtil.BOOK_CACHE_PREFIX + isbn.trim());
+            try {
+                String cacheKey = ParamsUtil.BOOK_CACHE_PREFIX + isbn.trim();
+                stringRedisTemplate.delete(cacheKey);
+            } catch (Exception e) {
+                System.err.println("删除图书详情缓存失败：" + e.getMessage());
+            }
             return "借阅成功";
         } finally {
             borrowRedisGuard.releaseBookStockLock(isbn.trim(), lockValue);

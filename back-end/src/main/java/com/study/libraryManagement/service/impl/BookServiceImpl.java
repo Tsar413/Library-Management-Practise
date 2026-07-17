@@ -197,6 +197,7 @@ public class BookServiceImpl extends ServiceImpl<BookMapper, Book> implements Bo
         wrapper2.set("price", bookDTO.getPrice());
         wrapper2.set("publisher", bookDTO.getPublisher());
         wrapper2.set("stock", bookDTO.getStock());
+        wrapper2.le("borrowed_count", bookDTO.getStock());
         /*
          * 只有上传了新图片时，
          * 才更新 image_url。
